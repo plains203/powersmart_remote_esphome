@@ -137,12 +137,6 @@ respond as expected (catches wiring/power mistakes early instead of failing
 silently on every send).
 
 ## Notes
-
-- **TX power / regulations**: default is 10dBm. Australia's 433.05-434.79MHz
-  band is available under an ACMA class licence for low-interference devices,
-  but there are conditions (EIRP limits, duty cycle) - worth a quick check of
-  the current ACMA LIPD class licence rather than assuming, since I haven't
-  verified current numbers here.
 - **Repeat count**: default 10 (matches Flipper's default replay). Each send
   takes several seconds because of this - if 10 feels excessive once you've
   confirmed reliable reception, `repeat: 5` in the `power_smart:` config will
