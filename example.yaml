@@ -1,0 +1,647 @@
+# Example ESPHome configuration for controlling Power Smart roller shutter
+# remotes from an ESP32 + CC1101 module.
+#
+# WIRING (common 8-pin CC1101 breakout, 26MHz crystal):
+#   CC1101 VCC  -> ESP32 3.3V   (NOT 5V)
+#   CC1101 GND  -> ESP32 GND
+#   CC1101 SCK  -> ESP32 GPIO18 (any SPI-capable pin)
+#   CC1101 MOSI -> ESP32 GPIO23
+#   CC1101 MISO -> ESP32 GPIO19
+#   CC1101 CSN  -> ESP32 GPIO5
+#   CC1101 GDO0 -> ESP32 GPIO4  (this is the pin the RF data is bit-banged on)
+#   CC1101 GDO2 -> not used, leave unconnected
+#
+# Getting remote_id / channel for each of your 4 physical remotes:
+#   Capture a button press with your Flipper Zero (Sub-GHz -> Read, or use
+#   your existing captures), note the "Key:" hex value, then run it through
+#   decode_key.py (included alongside this file), e.g.:
+#     python3 decode_key.py FDC136ACAA3EC952
+#   which prints the remote_id and channel to put in the substitutions below.
+
+esphome:
+  name: shutter-controller
+  friendly_name: Shutter Controller
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# --- fill these in after decoding a capture from each physical remote ---
+substitutions:
+  remote_1_id: "0x9BAC"   # TODO: replace with your remote's actual ID
+  remote_2_id: "0x0000"   # TODO
+  remote_3_id: "0x0000"   # TODO
+  remote_4_id: "0x0000"   # TODO
+
+# ... (your existing wifi/api/ota/logger config goes here) ...
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [power_smart]
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+remote_transmitter:
+  id: cc1101_tx
+  pin: GPIO4
+  # 100% duty = plain on/off keying, no IR-style sub-carrier - this is what
+  # makes the pin drive CC1101's GDO0 (async OOK data in) correctly.
+  carrier_duty_percent: 100%
+  # power_smart strobes the CC1101 back to idle right after a transmission,
+  # so this must block until the whole (repeated) send has actually finished.
+  # The power_smart component also forces this via codegen, but setting it
+  # here too keeps the config self-documenting.
+  non_blocking: false
+
+power_smart:
+  id: shutter_radio
+  cs_pin: GPIO5
+  remote_transmitter_id: cc1101_tx
+  frequency: 433430000Hz   # 433.43MHz - matches this remote's captures
+  crystal_frequency: 26000000Hz
+  tx_power: 10              # dBm - check your local low-power/ISM band rules
+  repeat: 10                # matches the default Flipper Zero replay behaviour
+
+button:
+  - platform: template
+    name: "Shutter R1 Ch1 Up"
+    id: shutter_r1_c1_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 1
+          command: UP
+  - platform: template
+    name: "Shutter R1 Ch1 Stop"
+    id: shutter_r1_c1_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch1 Down"
+    id: shutter_r1_c1_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 1
+          command: DOWN
+  - platform: template
+    name: "Shutter R1 Ch2 Up"
+    id: shutter_r1_c2_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 2
+          command: UP
+  - platform: template
+    name: "Shutter R1 Ch2 Stop"
+    id: shutter_r1_c2_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch2 Down"
+    id: shutter_r1_c2_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 2
+          command: DOWN
+  - platform: template
+    name: "Shutter R1 Ch3 Up"
+    id: shutter_r1_c3_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 3
+          command: UP
+  - platform: template
+    name: "Shutter R1 Ch3 Stop"
+    id: shutter_r1_c3_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch3 Down"
+    id: shutter_r1_c3_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 3
+          command: DOWN
+  - platform: template
+    name: "Shutter R1 Ch4 Up"
+    id: shutter_r1_c4_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 4
+          command: UP
+  - platform: template
+    name: "Shutter R1 Ch4 Stop"
+    id: shutter_r1_c4_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch4 Down"
+    id: shutter_r1_c4_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 4
+          command: DOWN
+  - platform: template
+    name: "Shutter R1 Ch5 Up"
+    id: shutter_r1_c5_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 5
+          command: UP
+  - platform: template
+    name: "Shutter R1 Ch5 Stop"
+    id: shutter_r1_c5_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch5 Down"
+    id: shutter_r1_c5_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 5
+          command: DOWN
+  - platform: template
+    name: "Shutter R1 Ch6 Up"
+    id: shutter_r1_c6_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 6
+          command: UP
+  - platform: template
+    name: "Shutter R1 Ch6 Stop"
+    id: shutter_r1_c6_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch6 Down"
+    id: shutter_r1_c6_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 6
+          command: DOWN
+  - platform: template
+    name: "Shutter R2 Ch1 Up"
+    id: shutter_r2_c1_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 1
+          command: UP
+  - platform: template
+    name: "Shutter R2 Ch1 Stop"
+    id: shutter_r2_c1_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch1 Down"
+    id: shutter_r2_c1_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 1
+          command: DOWN
+  - platform: template
+    name: "Shutter R2 Ch2 Up"
+    id: shutter_r2_c2_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 2
+          command: UP
+  - platform: template
+    name: "Shutter R2 Ch2 Stop"
+    id: shutter_r2_c2_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch2 Down"
+    id: shutter_r2_c2_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 2
+          command: DOWN
+  - platform: template
+    name: "Shutter R2 Ch3 Up"
+    id: shutter_r2_c3_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 3
+          command: UP
+  - platform: template
+    name: "Shutter R2 Ch3 Stop"
+    id: shutter_r2_c3_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch3 Down"
+    id: shutter_r2_c3_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 3
+          command: DOWN
+  - platform: template
+    name: "Shutter R2 Ch4 Up"
+    id: shutter_r2_c4_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 4
+          command: UP
+  - platform: template
+    name: "Shutter R2 Ch4 Stop"
+    id: shutter_r2_c4_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch4 Down"
+    id: shutter_r2_c4_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 4
+          command: DOWN
+  - platform: template
+    name: "Shutter R2 Ch5 Up"
+    id: shutter_r2_c5_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 5
+          command: UP
+  - platform: template
+    name: "Shutter R2 Ch5 Stop"
+    id: shutter_r2_c5_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch5 Down"
+    id: shutter_r2_c5_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 5
+          command: DOWN
+  - platform: template
+    name: "Shutter R2 Ch6 Up"
+    id: shutter_r2_c6_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 6
+          command: UP
+  - platform: template
+    name: "Shutter R2 Ch6 Stop"
+    id: shutter_r2_c6_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch6 Down"
+    id: shutter_r2_c6_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 6
+          command: DOWN
+  - platform: template
+    name: "Shutter R3 Ch1 Up"
+    id: shutter_r3_c1_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 1
+          command: UP
+  - platform: template
+    name: "Shutter R3 Ch1 Stop"
+    id: shutter_r3_c1_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch1 Down"
+    id: shutter_r3_c1_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 1
+          command: DOWN
+  - platform: template
+    name: "Shutter R3 Ch2 Up"
+    id: shutter_r3_c2_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 2
+          command: UP
+  - platform: template
+    name: "Shutter R3 Ch2 Stop"
+    id: shutter_r3_c2_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch2 Down"
+    id: shutter_r3_c2_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 2
+          command: DOWN
+  - platform: template
+    name: "Shutter R3 Ch3 Up"
+    id: shutter_r3_c3_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 3
+          command: UP
+  - platform: template
+    name: "Shutter R3 Ch3 Stop"
+    id: shutter_r3_c3_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch3 Down"
+    id: shutter_r3_c3_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 3
+          command: DOWN
+  - platform: template
+    name: "Shutter R3 Ch4 Up"
+    id: shutter_r3_c4_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 4
+          command: UP
+  - platform: template
+    name: "Shutter R3 Ch4 Stop"
+    id: shutter_r3_c4_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch4 Down"
+    id: shutter_r3_c4_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 4
+          command: DOWN
+  - platform: template
+    name: "Shutter R3 Ch5 Up"
+    id: shutter_r3_c5_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 5
+          command: UP
+  - platform: template
+    name: "Shutter R3 Ch5 Stop"
+    id: shutter_r3_c5_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch5 Down"
+    id: shutter_r3_c5_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 5
+          command: DOWN
+  - platform: template
+    name: "Shutter R3 Ch6 Up"
+    id: shutter_r3_c6_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 6
+          command: UP
+  - platform: template
+    name: "Shutter R3 Ch6 Stop"
+    id: shutter_r3_c6_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch6 Down"
+    id: shutter_r3_c6_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 6
+          command: DOWN
+  - platform: template
+    name: "Shutter R4 Ch1 Up"
+    id: shutter_r4_c1_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 1
+          command: UP
+  - platform: template
+    name: "Shutter R4 Ch1 Stop"
+    id: shutter_r4_c1_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch1 Down"
+    id: shutter_r4_c1_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 1
+          command: DOWN
+  - platform: template
+    name: "Shutter R4 Ch2 Up"
+    id: shutter_r4_c2_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 2
+          command: UP
+  - platform: template
+    name: "Shutter R4 Ch2 Stop"
+    id: shutter_r4_c2_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch2 Down"
+    id: shutter_r4_c2_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 2
+          command: DOWN
+  - platform: template
+    name: "Shutter R4 Ch3 Up"
+    id: shutter_r4_c3_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 3
+          command: UP
+  - platform: template
+    name: "Shutter R4 Ch3 Stop"
+    id: shutter_r4_c3_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch3 Down"
+    id: shutter_r4_c3_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 3
+          command: DOWN
+  - platform: template
+    name: "Shutter R4 Ch4 Up"
+    id: shutter_r4_c4_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 4
+          command: UP
+  - platform: template
+    name: "Shutter R4 Ch4 Stop"
+    id: shutter_r4_c4_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch4 Down"
+    id: shutter_r4_c4_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 4
+          command: DOWN
+  - platform: template
+    name: "Shutter R4 Ch5 Up"
+    id: shutter_r4_c5_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 5
+          command: UP
+  - platform: template
+    name: "Shutter R4 Ch5 Stop"
+    id: shutter_r4_c5_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch5 Down"
+    id: shutter_r4_c5_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 5
+          command: DOWN
+  - platform: template
+    name: "Shutter R4 Ch6 Up"
+    id: shutter_r4_c6_up
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 6
+          command: UP
+  - platform: template
+    name: "Shutter R4 Ch6 Stop"
+    id: shutter_r4_c6_stop
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch6 Down"
+    id: shutter_r4_c6_down
+    on_press:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 6
+          command: DOWN
