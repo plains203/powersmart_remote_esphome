@@ -54,7 +54,7 @@ class PowerSmartComponent : public Component,
   remote_transmitter::RemoteTransmitterComponent *transmitter_{nullptr};
   uint32_t frequency_hz_{433430000};
   uint32_t crystal_hz_{26000000};
-  int8_t tx_power_dbm_{10};
+  int8_t tx_power_dbm_{14};
   uint8_t repeat_{10};
 };
 
