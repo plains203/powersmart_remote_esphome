@@ -1,9 +1,9 @@
 #include "power_smart.h"
 #include "esphome/core/log.h"
-#include "esphome/core/hal.h"
 
 // ---------------------------------------------------------------------------
-// Power Smart roller-shutter RF protocol, reimplemented for ESP32 + CC1101.
+// Power Smart roller-shutter RF protocol for ESP32, driving ESPHome's
+// official cc1101 component.
 //
 // This is a from-scratch reimplementation derived from, and numerically
 // validated against, the open-source "power_smart" protocol decoder/encoder
@@ -13,6 +13,13 @@
 // re-running the exact decode state machine against a real RF capture and
 // confirming the encoder here reproduces the identical byte sequence and
 // pulse train.
+//
+// Radio handling (SPI, registers, PA table, frequency synthesis, TX/IDLE
+// state transitions) is delegated entirely to ESPHome's official cc1101
+// component; this component only encodes the protocol and drives the
+// bitstream through remote_transmitter (the ESP32 RMT peripheral) into the
+// CC1101's GDO0 pin in async serial OOK mode - the same technique the
+// Flipper Zero itself uses.
 //
 // Packet (64 bits, MSB first):
 //   byte0 = 0xFD                          fixed sync
@@ -27,12 +34,11 @@
 //   CHANNEL is a 6-bit one-hot value matching the remote's channel selector
 //   ID is a 16-bit value unique to a given physical remote
 //
-// Line coding: standard Manchester (IEEE-style), symbol timing:
-//   short = 225us, long = 450us
-// Each full 64-bit packet is sent 8x back-to-back (continuous Manchester
-// stream, no reset between repeats), followed by a ~500ms silent gap. This
-// whole unit is repeated `repeat_` times (default 10), matching what a real
-// remote / the Flipper Zero replay produces.
+// Line coding: standard Manchester, short=225us, long=450us. Each full
+// 64-bit packet is sent 8x back-to-back (continuous Manchester stream, no
+// reset between repeats), followed by a ~500ms silent gap. This whole unit
+// is repeated `repeat_` times (default 10), matching what a real remote /
+// the Flipper Zero replay produces.
 // ---------------------------------------------------------------------------
 
 namespace esphome {
@@ -40,177 +46,24 @@ namespace power_smart {
 
 static const char *const TAG = "power_smart";
 
-// CC1101 register addresses (standard TI CC1101 datasheet addresses)
-static const uint8_t CC1101_IOCFG0 = 0x02;
-static const uint8_t CC1101_FIFOTHR = 0x03;
-static const uint8_t CC1101_PKTCTRL0 = 0x08;
-static const uint8_t CC1101_FSCTRL1 = 0x0B;
-static const uint8_t CC1101_FREQ2 = 0x0D;
-static const uint8_t CC1101_FREQ1 = 0x0E;
-static const uint8_t CC1101_FREQ0 = 0x0F;
-static const uint8_t CC1101_MDMCFG4 = 0x10;
-static const uint8_t CC1101_MDMCFG3 = 0x11;
-static const uint8_t CC1101_MDMCFG2 = 0x12;
-static const uint8_t CC1101_MDMCFG1 = 0x13;
-static const uint8_t CC1101_MDMCFG0 = 0x14;
-static const uint8_t CC1101_MCSM0 = 0x18;
-static const uint8_t CC1101_FOCCFG = 0x19;
-static const uint8_t CC1101_AGCCTRL2 = 0x1B;
-static const uint8_t CC1101_AGCCTRL1 = 0x1C;
-static const uint8_t CC1101_AGCCTRL0 = 0x1D;
-static const uint8_t CC1101_WORCTRL = 0x20;
-static const uint8_t CC1101_FREND1 = 0x21;
-static const uint8_t CC1101_FREND0 = 0x22;
-static const uint8_t CC1101_PATABLE = 0x3E;
-
-// Strobe commands
-static const uint8_t CC1101_SRES = 0x30;
-static const uint8_t CC1101_SCAL = 0x33;
-static const uint8_t CC1101_STX = 0x35;
-static const uint8_t CC1101_SIDLE = 0x36;
-
-static const uint8_t CC1101_READ_SINGLE = 0x80;
-static const uint8_t CC1101_WRITE_BURST = 0x40;
-
 // Timing, validated against a real "Power Smart" capture
 static const uint32_t TE_SHORT_US = 225;
 static const uint32_t TE_LONG_US = 450;
 static const uint32_t GAP_US = TE_LONG_US * 1111;  // ~500ms trailing silence between repeats
 static const uint8_t INNER_REPEATS = 8;            // packet sent 8x back-to-back per burst
 
-void PowerSmartComponent::write_reg_(uint8_t addr, uint8_t value) {
-  this->enable();
-  this->transfer_byte(addr & 0x3F);
-  this->transfer_byte(value);
-  this->disable();
-}
-
-uint8_t PowerSmartComponent::read_reg_(uint8_t addr) {
-  this->enable();
-  this->transfer_byte((addr & 0x3F) | CC1101_READ_SINGLE);
-  uint8_t value = this->transfer_byte(0x00);
-  this->disable();
-  return value;
-}
-
-void PowerSmartComponent::strobe_(uint8_t cmd) {
-  this->enable();
-  this->transfer_byte(cmd);
-  this->disable();
-}
-
-void PowerSmartComponent::write_patable_(uint8_t value) {
-  // CC1101 uses PATABLE[0] for the OOK/ASK "off" (low) level and PATABLE[1]
-  // for the "on" (high) level, since FREND0's PA_POWER field (0x11) selects
-  // index 1. Both must be burst-written in the same CS assertion - writing
-  // only one byte leaves the other at an undefined reset value, which either
-  // leaves TX power uncontrolled or degrades OOK modulation depth.
-  uint8_t patable[8] = {0x00, value, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-  this->enable();
-  this->transfer_byte(CC1101_PATABLE | CC1101_WRITE_BURST);
-  for (uint8_t i = 0; i < 8; i++) {
-    this->transfer_byte(patable[i]);
-  }
-  this->disable();
-}
-
-uint8_t PowerSmartComponent::patable_for_dbm_(int8_t dbm) {
-  // ASK/OOK PATABLE values (TI CC1101 reference settings)
-  if (dbm >= 12)
-    return 0xC0;
-  if (dbm >= 10)
-    return 0xC5;
-  if (dbm >= 7)
-    return 0xCD;
-  if (dbm >= 5)
-    return 0x86;
-  if (dbm >= 0)
-    return 0x50;
-  if (dbm >= -6)
-    return 0x37;
-  if (dbm >= -10)
-    return 0x26;
-  if (dbm >= -15)
-    return 0x1D;
-  if (dbm >= -20)
-    return 0x17;
-  return 0x03;
-}
-
-void PowerSmartComponent::set_frequency_registers_() {
-  uint64_t freq_word = (uint64_t) this->frequency_hz_ * 65536ULL / this->crystal_hz_;
-  this->write_reg_(CC1101_FREQ2, (freq_word >> 16) & 0xFF);
-  this->write_reg_(CC1101_FREQ1, (freq_word >> 8) & 0xFF);
-  this->write_reg_(CC1101_FREQ0, freq_word & 0xFF);
-}
-
-void PowerSmartComponent::configure_radio_() {
-  this->strobe_(CC1101_SRES);
-  delay(2);
-
-  // Matches Flipper Zero's "OOK 650kHz Async" preset: async serial GDO0,
-  // ASK/OOK modulation, no preamble/sync/whitening - the MCU drives the
-  // bitstream directly and CC1101 just keys the carrier on/off.
-  this->write_reg_(CC1101_IOCFG0, 0x0D);
-  this->write_reg_(CC1101_FIFOTHR, 0x07);
-  this->write_reg_(CC1101_PKTCTRL0, 0x32);
-  this->write_reg_(CC1101_FSCTRL1, 0x06);
-  this->write_reg_(CC1101_MDMCFG0, 0x00);
-  this->write_reg_(CC1101_MDMCFG1, 0x00);
-  this->write_reg_(CC1101_MDMCFG2, 0x30);
-  this->write_reg_(CC1101_MDMCFG3, 0x32);
-  this->write_reg_(CC1101_MDMCFG4, 0x17);
-  this->write_reg_(CC1101_MCSM0, 0x18);
-  this->write_reg_(CC1101_FOCCFG, 0x18);
-  this->write_reg_(CC1101_AGCCTRL0, 0x91);
-  this->write_reg_(CC1101_AGCCTRL1, 0x00);
-  this->write_reg_(CC1101_AGCCTRL2, 0x07);
-  this->write_reg_(CC1101_WORCTRL, 0xFB);
-  this->write_reg_(CC1101_FREND0, 0x11);
-  this->write_reg_(CC1101_FREND1, 0xB6);
-
-  this->set_frequency_registers_();
-  this->write_patable_(this->patable_for_dbm_(this->tx_power_dbm_));
-
-  this->strobe_(CC1101_SCAL);
-  delay(2);
-  this->strobe_(CC1101_SIDLE);
-}
-
 void PowerSmartComponent::setup() {
-  this->spi_setup();
-
-  if (this->transmitter_ == nullptr) {
-    ESP_LOGE(TAG, "No remote_transmitter configured - set remote_transmitter_id in YAML");
+  if (this->radio_ == nullptr || this->transmitter_ == nullptr) {
+    ESP_LOGE(TAG, "cc1101 and remote_transmitter must both be configured");
     this->mark_failed();
     return;
-  }
-
-  // Give the crystal oscillator time to stabilize before the first SPI
-  // transaction. The datasheet's recommended approach is to poll MISO until
-  // it goes low; ESPHome's SPIDevice abstraction doesn't expose a direct
-  // MISO read, so a conservative fixed delay is used instead.
-  delay(30);
-
-  this->configure_radio_();
-
-  // Sanity check: read back a register we just wrote. Catches wiring
-  // mistakes (swapped MISO/MOSI, floating CS, no power to the module) at
-  // boot instead of failing silently on every transmit attempt.
-  uint8_t readback = this->read_reg_(CC1101_FREND1);
-  if (readback != 0xB6) {
-    ESP_LOGE(TAG, "CC1101 register read-back mismatch (got 0x%02X, expected 0xB6) - check wiring/power", readback);
-    this->mark_failed();
   }
 }
 
 void PowerSmartComponent::dump_config() {
-  ESP_LOGCONFIG(TAG, "Power Smart CC1101 transmitter:");
-  ESP_LOGCONFIG(TAG, "  Frequency: %.3f MHz", this->frequency_hz_ / 1000000.0f);
-  ESP_LOGCONFIG(TAG, "  Crystal: %.3f MHz", this->crystal_hz_ / 1000000.0f);
-  ESP_LOGCONFIG(TAG, "  TX power: %d dBm", this->tx_power_dbm_);
+  ESP_LOGCONFIG(TAG, "Power Smart transmitter:");
   ESP_LOGCONFIG(TAG, "  Repeat: %u", this->repeat_);
-  LOG_PIN("  CS Pin: ", this->cs_);
+  ESP_LOGCONFIG(TAG, "  (radio settings: see cc1101 component's own log output)");
 }
 
 uint64_t PowerSmartComponent::build_packet_(uint16_t remote_id, uint8_t channel_mask, PowerSmartCommand command) {
@@ -321,6 +174,10 @@ void PowerSmartComponent::encode_manchester_(uint64_t data, uint8_t data_bits, u
 }
 
 void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, PowerSmartCommand command) {
+  if (this->is_failed()) {
+    ESP_LOGE(TAG, "Component failed at setup - not sending");
+    return;
+  }
   if (channel < 1 || channel > 6) {
     ESP_LOGE(TAG, "channel must be 1-6, got %u", channel);
     return;
@@ -334,10 +191,11 @@ void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, Powe
   std::vector<int32_t> pulses;
   encode_manchester_(packet, 64, INNER_REPEATS, pulses);
 
-  // Enter TX: GDO0 becomes the async serial data input, CC1101 keys the
-  // carrier on/off according to whatever level the ESP32 drives on it.
-  this->strobe_(CC1101_STX);
-  delay(2);  // allow PLL/PA turn-on to settle before the first edge
+  // begin_tx() puts the CC1101 into async-serial TX mode with a proper
+  // IDLE -> calibrate -> TX transition and MARCSTATE verification; the RMT
+  // peripheral (remote_transmitter) then drives the bitstream into GDO0 and
+  // the CC1101 keys the carrier on/off accordingly.
+  this->radio_->begin_tx();
 
   auto call = this->transmitter_->transmit();
   call.get_data()->set_data(pulses);
@@ -345,7 +203,7 @@ void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, Powe
   call.set_send_wait(0);  // the trailing gap is already baked into `pulses`
   call.perform();
 
-  this->strobe_(CC1101_SIDLE);
+  this->radio_->set_idle();
 }
 
 }  // namespace power_smart

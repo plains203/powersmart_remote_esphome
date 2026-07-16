@@ -2,8 +2,23 @@
 
 This is a from-scratch ESP32 reimplementation of the "Power Smart" Sub-GHz
 protocol from your Flipper Zero firmware, packaged as an ESPHome external
-component. It talks to a CC1101 module to transmit Up/Down/Stop commands to
-Power Smart roller shutter receivers.
+component. It transmits Up/Down/Stop commands to Power Smart roller shutter
+receivers via a CC1101 module.
+
+Radio handling (SPI, registers, PA table, frequency synthesis, TX/IDLE
+state transitions) is delegated to ESPHome's official `cc1101:` component.
+This custom component only contains the part that doesn't exist anywhere
+else: the Power Smart packet encoder (layout + checksum + Manchester
+timing) and a `power_smart.send_command` action. It drives the encoded
+bitstream through `remote_transmitter` (the ESP32 RMT peripheral) into the
+CC1101's GDO0 pin in async serial OOK mode - the same technique the Flipper
+Zero itself uses.
+
+An earlier version of this component talked to the CC1101 directly with its
+own hand-written register tables. That was replaced once ESPHome shipped an
+official `cc1101:` driver: the radio-specific code is now maintained
+upstream (and verifies the chip ID on boot), leaving this component roughly
+150 lines smaller and focused solely on the protocol.
 
 ## How this was built / validated
 
@@ -26,9 +41,15 @@ just trust that reading, I validated it three independent ways:
 4. Re-implemented the encoder a third time in standalone C++ (identical logic
    to what's in `power_smart.cpp`) and confirmed it produces the exact same
    754-pulse output as the Python version.
+5. After the refactor onto the official `cc1101:` driver, re-ran the C++
+   encoder check to confirm the protocol logic was untouched - still the
+   same known-good packet (0xFD0337ACAAFCC852) and same 754-pulse train.
 
 So the packet structure, checksum, and timing in this component aren't a
-guess - they reproduce a real captured transmission exactly.
+guess - they reproduce a real captured transmission exactly. The whole
+config (custom component + official cc1101 block + 72 buttons) was also run
+through ESPHome's real config validation and C++ codegen to confirm it
+wires up against the actual cc1101 API.
 
 ### Packet layout (64 bits)
 
@@ -59,10 +80,10 @@ accordingly. This is the same technique the Flipper Zero itself uses.
 
 ## What you get
 
-A `power_smart` hub component that owns the CC1101 and a
-`power_smart.send_command` action you can call from any ESPHome automation
-(e.g. a `button`'s `on_press:`), taking `remote_id`, `channel` (1-6), and
-`command` (`UP`/`DOWN`/`STOP`).
+A `power_smart:` component that references a `cc1101:` radio and a
+`remote_transmitter:`, plus a `power_smart.send_command` action you can call
+from any ESPHome automation (e.g. a `button`'s `on_press:`), taking
+`remote_id`, `channel` (1-6), and `command` (`UP`/`DOWN`/`STOP`).
 
 `example.yaml` wires this up as 72 template buttons (4 remotes x 6 channels x
 3 commands) - since you wanted simple buttons rather than full `cover`
@@ -106,43 +127,36 @@ if a capture ever prints a "non-standard mask", it just means that
 particular button press wasn't a plain single-channel command - re-capture
 and try again.
 
-## Bugs found and fixed after initial build
+## One subtle issue worth knowing about
 
-A self-review after the first version turned up two real issues, both now
-fixed in this package:
+`send_command()` puts the CC1101 back to idle right after the transmitter's
+`perform()` call returns, which only works if that call *blocks* until the
+whole repeated transmission is actually done. ESPHome changed
+`remote_transmitter`'s default to non-blocking in 2025.11.0, which would
+otherwise make `perform()` return almost immediately and cut the RF off
+within microseconds of starting. The component forces `non_blocking: false`
+on its transmitter via codegen (and `example.yaml` sets it explicitly too,
+so it's not a surprise if you inspect the config).
 
-1. **CC1101 would have been strobed back to idle before it finished
-   transmitting.** `send_command()` strobes `SIDLE` right after the
-   transmitter's `perform()` call returns, which only works if that call
-   *blocks* until the whole repeated transmission is actually done. ESPHome
-   changed `remote_transmitter`'s default to non-blocking in 2025.11.0, which
-   would have made `perform()` return almost immediately and `SIDLE` cut the
-   RF off within microseconds of starting. Fixed by having the component
-   force `non_blocking: false` on its transmitter via codegen (and set
-   explicitly in `example.yaml` too, so it's not a surprise if you inspect
-   the config).
-
-2. **TX power register was being written to the wrong PATABLE slot.** CC1101
-   uses PATABLE[0] for the OOK "off" level and PATABLE[1] for the "on" level
-   (selected by `FREND0`'s `PA_POWER` field, per the preset's own comment:
-   "high is PATABLE[1]"). The original code only burst-wrote one byte, which
-   landed in slot 0 (the "off" slot) - meaning actual transmit power was left
-   at the chip's uncontrolled reset value rather than what `tx_power:`
-   requested. Fixed to correctly write `[0x00, <power>, 0, 0, 0, 0, 0, 0]` in
-   one burst, matching the validated preset exactly.
-
-Also added: a short startup delay plus a register read-back check at boot,
-which will log an error and mark the component failed if the CC1101 doesn't
-respond as expected (catches wiring/power mistakes early instead of failing
-silently on every send).
+(An earlier self-contained version of this component also had a PATABLE
+slot bug and lacked a chip-presence check at boot. Both are now moot - the
+official `cc1101:` driver handles PA table setup correctly and verifies the
+chip ID on setup.)
 
 ## Notes
+
+- **TX power / regulations**: `output_power` in the `cc1101:` block defaults
+  to 10dBm here. Australia's 433.05-434.79MHz band is available under an
+  ACMA class licence for low-interference devices, but there are conditions
+  (EIRP limits, duty cycle) - worth a quick check of the current ACMA LIPD
+  class licence rather than assuming, since I haven't verified current
+  numbers here.
 - **Repeat count**: default 10 (matches Flipper's default replay). Each send
   takes several seconds because of this - if 10 feels excessive once you've
   confirmed reliable reception, `repeat: 5` in the `power_smart:` config will
   speed things up.
-- `frequency:` is set to 433.43MHz to match your remotes. If you ever add a
-  remote that doesn't respond, double check its `.sub` capture's
-  `Frequency:` line in case it's a different variant.
+- `frequency:` is set to 433.43MHz in the `cc1101:` block to match your
+  remotes. If you ever add a remote that doesn't respond, double check its
+  `.sub` capture's `Frequency:` line in case it's a different variant.
 - This only implements *sending*. Your Flipper Zero remains the best tool for
   capturing/identifying new remotes.

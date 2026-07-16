@@ -1,6 +1,10 @@
 # Example ESPHome configuration for controlling Power Smart roller shutter
 # remotes from an ESP32 + CC1101 module.
 #
+# This uses ESPHome's official `cc1101:` component for all radio handling;
+# the custom `power_smart:` component only adds the Power Smart protocol
+# encoder and the send_command action.
+#
 # WIRING (common 8-pin CC1101 breakout, 26MHz crystal):
 #   CC1101 VCC  -> ESP32 3.3V   (NOT 5V)
 #   CC1101 GND  -> ESP32 GND
@@ -8,15 +12,14 @@
 #   CC1101 MOSI -> ESP32 GPIO23
 #   CC1101 MISO -> ESP32 GPIO19
 #   CC1101 CSN  -> ESP32 GPIO5
-#   CC1101 GDO0 -> ESP32 GPIO4  (this is the pin the RF data is bit-banged on)
+#   CC1101 GDO0 -> ESP32 GPIO4  (the pin the RF data is bit-banged on)
 #   CC1101 GDO2 -> not used, leave unconnected
 #
 # Getting remote_id / channel for each of your 4 physical remotes:
-#   Capture a button press with your Flipper Zero (Sub-GHz -> Read, or use
-#   your existing captures), note the "Key:" hex value, then run it through
-#   decode_key.py (included alongside this file), e.g.:
+#   Capture a button press with your Flipper Zero, note the "Key:" hex value,
+#   then run it through decode_key.py:
 #     python3 decode_key.py FDC136ACAA3EC952
-#   which prints the remote_id and channel to put in the substitutions below.
+#   which prints the remote_id to put in the substitutions below.
 
 esphome:
   name: shutter-controller
@@ -47,26 +50,35 @@ spi:
   mosi_pin: GPIO23
   miso_pin: GPIO19
 
+# Official ESPHome CC1101 driver - handles SPI, registers, PA table,
+# frequency synthesis and TX/IDLE state transitions.
+cc1101:
+  id: cc1101_radio
+  cs_pin: GPIO5
+  frequency: 433.43MHz        # matches this remote's captures
+  modulation_type: "ASK/OOK"
+  output_power: 10            # dBm - check your local low-power/ISM band rules
+  # Manchester is done in software by the power_smart encoder (to match the
+  # exact Flipper timing), so leave the CC1101's own manchester setting off.
+  manchester: false
+
 remote_transmitter:
   id: cc1101_tx
   pin: GPIO4
-  # 100% duty = plain on/off keying, no IR-style sub-carrier - this is what
-  # makes the pin drive CC1101's GDO0 (async OOK data in) correctly.
+  # 100% duty = plain on/off keying, no IR-style sub-carrier - this drives
+  # CC1101's GDO0 (async OOK data in) directly.
   carrier_duty_percent: 100%
-  # power_smart strobes the CC1101 back to idle right after a transmission,
-  # so this must block until the whole (repeated) send has actually finished.
-  # The power_smart component also forces this via codegen, but setting it
-  # here too keeps the config self-documenting.
+  # power_smart puts the CC1101 back to idle right after a transmission, so
+  # this must block until the whole (repeated) send has finished. The
+  # power_smart component also forces this via codegen; set here too so the
+  # config is self-documenting.
   non_blocking: false
 
 power_smart:
   id: shutter_radio
-  cs_pin: GPIO5
+  cc1101_id: cc1101_radio
   remote_transmitter_id: cc1101_tx
-  frequency: 433430000Hz   # 433.43MHz - matches this remote's captures
-  crystal_frequency: 26000000Hz
-  tx_power: 10              # dBm - check your local low-power/ISM band rules
-  repeat: 10                # matches the default Flipper Zero replay behaviour
+  repeat: 10                  # matches the default Flipper Zero replay behaviour
 
 button:
   - platform: template
