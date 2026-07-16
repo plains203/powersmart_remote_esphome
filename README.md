@@ -127,16 +127,23 @@ if a capture ever prints a "non-standard mask", it just means that
 particular button press wasn't a plain single-channel command - re-capture
 and try again.
 
-## One subtle issue worth knowing about
+## Transmit timing / why it's non-blocking
 
-`send_command()` puts the CC1101 back to idle right after the transmitter's
-`perform()` call returns, which only works if that call *blocks* until the
-whole repeated transmission is actually done. ESPHome changed
-`remote_transmitter`'s default to non-blocking in 2025.11.0, which would
-otherwise make `perform()` return almost immediately and cut the RF off
-within microseconds of starting. The component forces `non_blocking: false`
-on its transmitter via codegen (and `example.yaml` sets it explicitly too,
-so it's not a surprise if you inspect the config).
+A full Power Smart burst is about 7 seconds long: 10 repeats of the packet
+(each packet is sent 8x back-to-back) with a ~500ms gap between repeats -
+exactly what the Flipper Zero transmits. The component sends this
+*non-blocking*, so the ESP32 RMT peripheral clocks the whole sequence out in
+the background while the main loop keeps running.
+
+This matters: an earlier version blocked the main loop until the
+transmission finished, which reset the ESP via the task watchdog (~7s is far
+too long to hold up the loop). If you ever fork this, keep the transmit
+non-blocking (`non_blocking: true` on the `remote_transmitter`, which is also
+the ESPHome default) and don't add a blocking wait after `perform()`.
+
+The transmission ends with the carrier off (OOK idle-low), and the next
+command re-enters TX cleanly through the CC1101's IDLE->TX path, so there's
+no need to manually strobe the radio back to idle.
 
 (An earlier self-contained version of this component also had a PATABLE
 slot bug and lacked a chip-presence check at boot. Both are now moot - the

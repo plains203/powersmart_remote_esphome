@@ -4,7 +4,6 @@ from esphome import automation
 from esphome.components import cc1101
 from esphome.components import remote_transmitter
 from esphome.const import CONF_ID
-from esphome.core import CORE
 
 CODEOWNERS = ["@user"]
 DEPENDENCIES = ["cc1101", "remote_transmitter"]
@@ -49,14 +48,6 @@ async def to_code(config):
 
     transmitter = await cg.get_variable(config[CONF_REMOTE_TRANSMITTER_ID])
     cg.add(var.set_remote_transmitter(transmitter))
-    # send_command() puts the CC1101 back to idle immediately after the
-    # transmitter call returns, which only works correctly if that call
-    # blocks until the entire (repeated) transmission has actually finished
-    # on the RMT peripheral. ESPHome changed the remote_transmitter default
-    # to non-blocking in 2025.11.0, so force it here rather than depend on
-    # the user's own remote_transmitter config.
-    if CORE.is_esp32:
-        cg.add(transmitter.set_non_blocking(False))
 
     cg.add(var.set_repeat(config[CONF_REPEAT]))
 

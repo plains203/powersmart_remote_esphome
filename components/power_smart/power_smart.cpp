@@ -191,19 +191,23 @@ void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, Powe
   std::vector<int32_t> pulses;
   encode_manchester_(packet, 64, INNER_REPEATS, pulses);
 
-  // begin_tx() puts the CC1101 into async-serial TX mode with a proper
-  // IDLE -> calibrate -> TX transition and MARCSTATE verification; the RMT
-  // peripheral (remote_transmitter) then drives the bitstream into GDO0 and
-  // the CC1101 keys the carrier on/off accordingly.
+  // Enter async-serial TX mode (IDLE -> calibrate -> TX with MARCSTATE
+  // verification). The RMT peripheral then drives the bitstream into GDO0
+  // and the CC1101 keys the carrier on/off accordingly.
   this->radio_->begin_tx();
 
+  // Transmit non-blocking. A full Power Smart burst is ~7 seconds (10
+  // repeats of the 8x packet plus the ~500ms inter-repeat gap, matching the
+  // Flipper). The RMT hardware clocks this out in the background; we must
+  // NOT block the main loop waiting for it or the task watchdog will reset
+  // the ESP. The transmission ends with the carrier off (OOK idle-low), and
+  // the next send re-enters TX cleanly through begin_tx()'s IDLE->TX path,
+  // so there is no need to strobe idle here.
   auto call = this->transmitter_->transmit();
   call.get_data()->set_data(pulses);
   call.set_send_times(this->repeat_);
   call.set_send_wait(0);  // the trailing gap is already baked into `pulses`
   call.perform();
-
-  this->radio_->set_idle();
 }
 
 }  // namespace power_smart

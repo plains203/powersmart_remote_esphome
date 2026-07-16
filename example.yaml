@@ -68,11 +68,11 @@ remote_transmitter:
   # 100% duty = plain on/off keying, no IR-style sub-carrier - this drives
   # CC1101's GDO0 (async OOK data in) directly.
   carrier_duty_percent: 100%
-  # power_smart puts the CC1101 back to idle right after a transmission, so
-  # this must block until the whole (repeated) send has finished. The
-  # power_smart component also forces this via codegen; set here too so the
-  # config is self-documenting.
-  non_blocking: false
+  # A full Power Smart burst is ~7 seconds (matching the Flipper). It must
+  # run non-blocking so the RMT peripheral clocks it out in the background;
+  # blocking the main loop that long would trip the task watchdog and reset
+  # the ESP.
+  non_blocking: true
 
 power_smart:
   id: shutter_radio
