@@ -79,7 +79,7 @@ power_smart:
   id: shutter_radio
   cc1101_id: cc1101_radio
   remote_transmitter_id: cc1101_tx
-  repeat: 10                  # matches the default Flipper Zero replay behaviour
+  repeat: 3                  # matches the default Flipper Zero replay behaviour
 
 button:
   - platform: template
