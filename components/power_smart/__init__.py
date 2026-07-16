@@ -22,6 +22,7 @@ POWER_SMART_COMMANDS = {
 CONF_CC1101_ID = "cc1101_id"
 CONF_REMOTE_TRANSMITTER_ID = "remote_transmitter_id"
 CONF_REPEAT = "repeat"
+CONF_MAX_QUEUE_DEPTH = "max_queue_depth"
 
 CONF_REMOTE_ID = "remote_id"
 CONF_CHANNEL = "channel"
@@ -35,6 +36,7 @@ CONFIG_SCHEMA = cv.Schema(
             remote_transmitter.RemoteTransmitterComponent
         ),
         cv.Optional(CONF_REPEAT, default=10): cv.int_range(min=1, max=50),
+        cv.Optional(CONF_MAX_QUEUE_DEPTH, default=8): cv.int_range(min=1, max=64),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -50,6 +52,7 @@ async def to_code(config):
     cg.add(var.set_remote_transmitter(transmitter))
 
     cg.add(var.set_repeat(config[CONF_REPEAT]))
+    cg.add(var.set_max_queue_depth(config[CONF_MAX_QUEUE_DEPTH]))
 
 
 POWER_SMART_SEND_COMMAND_SCHEMA = cv.Schema(

@@ -5,6 +5,7 @@
 #include "esphome/components/cc1101/cc1101.h"
 #include "esphome/components/remote_transmitter/remote_transmitter.h"
 
+#include <deque>
 #include <vector>
 
 namespace esphome {
@@ -19,9 +20,16 @@ enum PowerSmartCommand : uint8_t {
   POWER_SMART_COMMAND_STOP = 3,
 };
 
+struct PowerSmartQueuedCommand {
+  uint16_t remote_id;
+  uint8_t channel;
+  PowerSmartCommand command;
+};
+
 class PowerSmartComponent : public Component {
  public:
   void setup() override;
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 
@@ -30,18 +38,34 @@ class PowerSmartComponent : public Component {
     this->transmitter_ = transmitter;
   }
   void set_repeat(uint8_t repeat) { this->repeat_ = repeat; }
+  void set_max_queue_depth(uint8_t depth) { this->max_queue_depth_ = depth; }
 
-  // channel is 1-6 (matches the physical remote's 6-position channel selector)
+  // channel is 1-6 (matches the physical remote's 6-position channel selector).
+  // If a transmission is already in flight, the command is queued and sent
+  // when the radio is free.
   void send_command(uint16_t remote_id, uint8_t channel, PowerSmartCommand command);
+
+  // True while a burst is being transmitted (or one is queued waiting to go).
+  bool is_busy() const { return this->busy_; }
 
  protected:
   static uint64_t build_packet_(uint16_t remote_id, uint8_t channel_mask, PowerSmartCommand command);
   static void encode_manchester_(uint64_t data, uint8_t data_bits, uint8_t inner_repeats,
                                   std::vector<int32_t> &out);
 
+  // Actually keys the radio and starts the (non-blocking) RMT transmission.
+  void transmit_now_(const PowerSmartQueuedCommand &cmd);
+  // Duration in ms of one full burst at the current repeat count.
+  uint32_t burst_duration_ms_() const;
+
   cc1101::CC1101Component *radio_{nullptr};
   remote_transmitter::RemoteTransmitterComponent *transmitter_{nullptr};
   uint8_t repeat_{10};
+  uint8_t max_queue_depth_{8};
+
+  std::deque<PowerSmartQueuedCommand> queue_;
+  bool busy_{false};
+  uint32_t busy_until_ms_{0};
 };
 
 template<typename... Ts> class PowerSmartSendCommandAction : public Action<Ts...> {

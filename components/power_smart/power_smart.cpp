@@ -63,6 +63,8 @@ void PowerSmartComponent::setup() {
 void PowerSmartComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Power Smart transmitter:");
   ESP_LOGCONFIG(TAG, "  Repeat: %u", this->repeat_);
+  ESP_LOGCONFIG(TAG, "  Burst duration: ~%u ms", this->burst_duration_ms_());
+  ESP_LOGCONFIG(TAG, "  Max queue depth: %u", this->max_queue_depth_);
   ESP_LOGCONFIG(TAG, "  (radio settings: see cc1101 component's own log output)");
 }
 
@@ -173,6 +175,18 @@ void PowerSmartComponent::encode_manchester_(uint64_t data, uint8_t data_bits, u
   out.push_back(-int32_t(GAP_US));
 }
 
+uint32_t PowerSmartComponent::burst_duration_ms_() const {
+  // One repeat = (8x 64-bit Manchester packet) + one ~500ms trailing gap.
+  // The data portion is ~230.4ms; it varies by <0.1% depending on the exact
+  // bit pattern (Manchester merges runs of identical bits), so we use the
+  // upper bound plus a margin below - this guarantees we never start the
+  // next queued command before the current burst has actually finished.
+  const uint32_t data_us = 230400;  // upper bound, summed from encoder output
+  const uint32_t one_repeat_us = data_us + GAP_US;
+  // + a small safety margin so we never fire the next command a hair early
+  return (one_repeat_us * this->repeat_) / 1000 + 50;
+}
+
 void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, PowerSmartCommand command) {
   if (this->is_failed()) {
     ESP_LOGE(TAG, "Component failed at setup - not sending");
@@ -182,11 +196,35 @@ void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, Powe
     ESP_LOGE(TAG, "channel must be 1-6, got %u", channel);
     return;
   }
-  uint8_t channel_mask = 1 << (channel - 1);
 
-  uint64_t packet = build_packet_(remote_id, channel_mask, command);
-  ESP_LOGD(TAG, "Sending remote_id=0x%04X channel=%u command=%u packet=0x%016llX", remote_id, channel,
-           (unsigned) command, (unsigned long long) packet);
+  PowerSmartQueuedCommand cmd{remote_id, channel, command};
+
+  if (!this->busy_) {
+    // Radio is free - transmit immediately.
+    this->transmit_now_(cmd);
+    return;
+  }
+
+  // A transmission is in flight. Queue this command to send when it finishes,
+  // rather than blocking (which would stall the main loop and could trip the
+  // task watchdog) or dropping it.
+  if (this->queue_.size() >= this->max_queue_depth_) {
+    // Queue full - drop the OLDEST pending command to make room, so the most
+    // recent user intent always wins. Shutters don't benefit from executing a
+    // long backlog of stale presses.
+    ESP_LOGW(TAG, "Queue full (%u), dropping oldest pending command", this->max_queue_depth_);
+    this->queue_.pop_front();
+  }
+  this->queue_.push_back(cmd);
+  ESP_LOGD(TAG, "Radio busy - queued remote_id=0x%04X channel=%u command=%u (queue depth %u)", remote_id,
+           channel, (unsigned) command, (unsigned) this->queue_.size());
+}
+
+void PowerSmartComponent::transmit_now_(const PowerSmartQueuedCommand &cmd) {
+  uint8_t channel_mask = 1 << (cmd.channel - 1);
+  uint64_t packet = build_packet_(cmd.remote_id, channel_mask, cmd.command);
+  ESP_LOGD(TAG, "Sending remote_id=0x%04X channel=%u command=%u packet=0x%016llX", cmd.remote_id, cmd.channel,
+           (unsigned) cmd.command, (unsigned long long) packet);
 
   std::vector<int32_t> pulses;
   encode_manchester_(packet, 64, INNER_REPEATS, pulses);
@@ -196,18 +234,40 @@ void PowerSmartComponent::send_command(uint16_t remote_id, uint8_t channel, Powe
   // and the CC1101 keys the carrier on/off accordingly.
   this->radio_->begin_tx();
 
-  // Transmit non-blocking. A full Power Smart burst is ~7 seconds (10
-  // repeats of the 8x packet plus the ~500ms inter-repeat gap, matching the
-  // Flipper). The RMT hardware clocks this out in the background; we must
-  // NOT block the main loop waiting for it or the task watchdog will reset
-  // the ESP. The transmission ends with the carrier off (OOK idle-low), and
-  // the next send re-enters TX cleanly through begin_tx()'s IDLE->TX path,
-  // so there is no need to strobe idle here.
+  // Transmit non-blocking. The RMT hardware clocks the burst out in the
+  // background; we must NOT block the main loop waiting for it. We mark
+  // ourselves busy for the known burst duration and let loop() drain any
+  // queued commands once that time elapses.
   auto call = this->transmitter_->transmit();
   call.get_data()->set_data(pulses);
   call.set_send_times(this->repeat_);
   call.set_send_wait(0);  // the trailing gap is already baked into `pulses`
   call.perform();
+
+  this->busy_ = true;
+  this->busy_until_ms_ = millis() + this->burst_duration_ms_();
+}
+
+void PowerSmartComponent::loop() {
+  if (!this->busy_) {
+    return;
+  }
+  // Still transmitting? (millis() wraps every ~49 days; the subtraction
+  // comparison below is wrap-safe.)
+  if ((int32_t) (millis() - this->busy_until_ms_) < 0) {
+    return;
+  }
+
+  // Current burst has finished.
+  this->busy_ = false;
+
+  if (!this->queue_.empty()) {
+    PowerSmartQueuedCommand next = this->queue_.front();
+    this->queue_.pop_front();
+    ESP_LOGD(TAG, "Radio free - sending next queued command (remaining queue %u)",
+             (unsigned) this->queue_.size());
+    this->transmit_now_(next);
+  }
 }
 
 }  // namespace power_smart
