@@ -32,7 +32,7 @@ esp32:
 
 # --- fill these in after decoding a capture from each physical remote ---
 substitutions:
-  remote_1_id: "0x9BAC"   # TODO: replace with your remote's actual ID or 0xE001-0xE999 should work but is untested
+  remote_1_id: "0x9BAC"   # TODO: replace with your remote's actual ID or 0xE001-0xE999 should work but is untested, they do not work. Remote 1 is genuine.
   remote_2_id: "0xE001"   
   remote_3_id: "0xE002"   
   remote_4_id: "0xE003" 
