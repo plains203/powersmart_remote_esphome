@@ -1,0 +1,633 @@
+
+# =============================================================================
+# Power Smart roller shutter controller
+# Wemos S2 Mini + E07-M1101D-SMA (CC1101) module
+# =============================================================================
+#
+# WIRING (E07-M1101D-SMA V2.0, 8-pin  ->  Wemos S2 Mini):
+#   E07 pin 1  GND   -> GND
+#   E07 pin 2  VCC   -> 3V3        (3.3V only - NEVER 5V)
+#   E07 pin 3  GDO0  -> GPIO4      (RF data line driven by remote_transmitter)
+#   E07 pin 4  CSN   -> GPIO12     (SPI chip select)
+#   E07 pin 5  SCK   -> GPIO7      (SPI clock,  native FSPI)
+#   E07 pin 6  MOSI  -> GPIO11     (SPI MOSI,   native FSPI)
+#   E07 pin 7  MISO  -> GPIO9      (SPI MISO,   native FSPI)
+#   E07 pin 8  GDO2  -> not connected
+#
+# Before soldering: check your module's silkscreen labels match the order
+# above - the E07 has had pinout revisions. If the cc1101 component logs a
+# chip-ID mismatch at boot, it's almost always a swapped MISO/MOSI or CSN.
+#
+# SETUP:
+#   1. Capture a button press from each remote with your Flipper Zero, then:
+#        python3 decode_key.py FDC136ACAA3EC952
+#      to get each remote_id, and fill them into substitutions below.
+#   2. The component folder (containing components/power_smart/) must sit in
+#      the same directory as this YAML, or adjust external_components: source.
+# =============================================================================
+
+esphome:
+  name: powersmart1
+  friendly_name: PowerSmart Controller 1
+
+esp32:
+  board: lolin_s2_mini
+  framework:
+    type: esp-idf
+
+# --- fill these in after decoding a capture from each physical remote ---
+substitutions:
+  remote_1_id: "0x9BAC"   # TODO: replace with your remote's actual ID or generate them with the generate_ids.py
+  remote_2_id: "0x62B6"   
+  remote_3_id: "0x87AA"   
+  remote_4_id: "0xD9A4"   
+
+# -----------------------------------------------------------------------------
+# Connectivity  (replace with your own secrets / network details)
+# -----------------------------------------------------------------------------
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+logger:
+
+# -----------------------------------------------------------------------------
+# Power Smart component + CC1101 radio
+# -----------------------------------------------------------------------------
+external_components:
+  - source:
+      type: git
+      url: https://github.com/plains203/powersmart_remote_esphome
+      ref: main            # optional
+    components: [power_smart]
+
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO11
+  miso_pin: GPIO9
+
+# Official ESPHome CC1101 driver - handles SPI, registers, PA table,
+# frequency synthesis and TX/IDLE state transitions.
+cc1101:
+  id: cc1101_radio
+  cs_pin: GPIO12
+  frequency: 433.43MHz        # matches this remote's captures
+  modulation_type: "ASK/OOK"
+  output_power: 10            # dBm - check your local low-power/ISM band rules
+  # Manchester is done in software by the power_smart encoder (to match the
+  # exact Flipper timing), so leave the CC1101's own manchester setting off.
+  manchester: false
+
+remote_transmitter:
+  id: cc1101_tx
+  pin: GPIO4
+  # 100% duty = plain on/off keying, no IR-style sub-carrier - this drives
+  # CC1101's GDO0 (async OOK data in) directly.
+  carrier_duty_percent: 100%
+  # A full Power Smart burst is ~7 seconds (matching the Flipper). It must
+  # run non-blocking so the RMT peripheral clocks it out in the background;
+  # blocking the main loop that long would trip the task watchdog and reset
+  # the ESP.
+  non_blocking: true
+
+power_smart:
+  id: shutter_radio
+  cc1101_id: cc1101_radio
+  remote_transmitter_id: cc1101_tx
+  repeat: 3                   # 3 confirmed reliable on-hardware; ~2.2s/burst
+                              # (Flipper default is 10 = ~7.3s, more than needed here)
+  max_queue_depth: 8          # commands arriving mid-burst are queued (not dropped)
+                              # and sent in order when the radio frees up
+
+# -----------------------------------------------------------------------------
+# Radio status - lets Home Assistant see when a command is transmitting
+# -----------------------------------------------------------------------------
+binary_sensor:
+  - platform: template
+    name: "Shutter Radio Transmitting"
+    id: shutter_radio_busy
+    lambda: 'return id(shutter_radio).is_busy();'
+
+# -----------------------------------------------------------------------------
+# Covers: 4 remotes x 6 channels = 24 shutters
+#
+# Simple (Option 1) covers: open / stop / close only, no position tracking.
+# assumed_state: true tells Home Assistant there's no position feedback, so
+# it shows separate Up / Stop / Down buttons instead of a toggle.
+#
+# Rename each cover to match your actual rooms/windows. Channel maps to the
+# physical remote's channel selector (1-6).
+# -----------------------------------------------------------------------------
+cover:
+  - platform: template
+    name: "Shutter R1 Ch1"
+    id: shutter_r1_c1
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 1
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 1
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch2"
+    id: shutter_r1_c2
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 2
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 2
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch3"
+    id: shutter_r1_c3
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 3
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 3
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch4"
+    id: shutter_r1_c4
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 4
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 4
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch5"
+    id: shutter_r1_c5
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 5
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 5
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R1 Ch6"
+    id: shutter_r1_c6
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 6
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 6
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_1_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch1"
+    id: shutter_r2_c1
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 1
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 1
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch2"
+    id: shutter_r2_c2
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 2
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 2
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch3"
+    id: shutter_r2_c3
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 3
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 3
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch4"
+    id: shutter_r2_c4
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 4
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 4
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch5"
+    id: shutter_r2_c5
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 5
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 5
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R2 Ch6"
+    id: shutter_r2_c6
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 6
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 6
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_2_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch1"
+    id: shutter_r3_c1
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 1
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 1
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch2"
+    id: shutter_r3_c2
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 2
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 2
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch3"
+    id: shutter_r3_c3
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 3
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 3
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch4"
+    id: shutter_r3_c4
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 4
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 4
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch5"
+    id: shutter_r3_c5
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 5
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 5
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R3 Ch6"
+    id: shutter_r3_c6
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 6
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 6
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_3_id}
+          channel: 6
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch1"
+    id: shutter_r4_c1
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 1
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 1
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 1
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch2"
+    id: shutter_r4_c2
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 2
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 2
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 2
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch3"
+    id: shutter_r4_c3
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 3
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 3
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 3
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch4"
+    id: shutter_r4_c4
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 4
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 4
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 4
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch5"
+    id: shutter_r4_c5
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 5
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 5
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 5
+          command: STOP
+  - platform: template
+    name: "Shutter R4 Ch6"
+    id: shutter_r4_c6
+    device_class: shutter
+    assumed_state: true
+    optimistic: true
+    open_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 6
+          command: UP
+    close_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 6
+          command: DOWN
+    stop_action:
+      - power_smart.send_command:
+          remote_id: ${remote_4_id}
+          channel: 6
+          command: STOP
