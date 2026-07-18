@@ -318,6 +318,11 @@ symbols. Each 64-bit packet is sent 8× back-to-back in one continuous stream,
 followed by a ~500 ms gap; that whole unit is repeated `repeat` times. RF is
 OOK/ASK with the CC1101 in async-serial mode.
 
+For a full, standalone specification — enough to re-implement the protocol on
+another platform (different MCU, SDR, RF bridge, etc.) — see
+[**PROTOCOL.md**](PROTOCOL.md). It documents the exact bit layout, checksum
+maths, Manchester timing, repetition structure, and a fully worked example.
+
 ## Regulatory note
 
 The 433 MHz band is licence-exempt in many regions but with **conditions**
